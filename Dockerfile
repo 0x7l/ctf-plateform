@@ -1,6 +1,17 @@
-# Use Node.js LTS as the base image
-FROM node:20-alpine
+FROM node:24-alpine
 
+# Install required system packages
+RUN apk add --no-cache \
+    wget \
+    curl \
+    git
+
+# Verify installations
+RUN node --version && \
+    npm --version && \
+    git --version && \
+    curl --version && \
+    wget --version
 # Create app directory
 WORKDIR /usr/src/app
 
@@ -14,7 +25,7 @@ RUN npm ci --only=production
 COPY . .
 
 # Expose the API port
-EXPOSE 3000
+EXPOSE 4445
 
 # Start the application
 CMD ["node", "server.js"]

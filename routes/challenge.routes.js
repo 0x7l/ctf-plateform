@@ -9,7 +9,7 @@ const {
   deleteChallenge,
   stopChallenge,
   getChallengeLogs,
-  getContainerStats,
+  getContainerStatsController,
   deployChallenge
 } = require('../controllers/challenge.controller');
 const { validateChallengeInput } = require('../middleware/validator');
@@ -26,7 +26,7 @@ router.post('/:id/stop', authenticate, authorize('admin'), stopChallenge);
 
 //Challenge monitoring routes - authenticated users only
 router.get('/:id/logs', authenticate, getChallengeLogs);
-router.get('/:id/stats', authenticate, getContainerStats);
+router.get('/:id/stats', authenticate, getContainerStatsController); // Ensure correct name
 
 //Admin routes - only admins can create/update/delete challenges
 router.post('/', authenticate, authorize('admin'), validateChallengeInput, createChallenge);

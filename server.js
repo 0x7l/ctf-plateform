@@ -3,7 +3,6 @@ const dotenv = require('dotenv');
 const connectDB = require('./config/db');
 const logger = require('./middleware/logger');
 const cors = require('cors');
-const path = require('path');
 
 // Load environment variables
 dotenv.config();
@@ -87,7 +86,7 @@ app.use((err, req, res, next) => {
 });
 
 // Set port from environment variables or default to 3000
-const PORT = process.env.PORT || 3000;
+const PORT = process.env.PORT || 4445;
 
 // Start server if not in test environment
 if (process.env.NODE_ENV !== 'test') {

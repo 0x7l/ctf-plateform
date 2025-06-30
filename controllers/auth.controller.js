@@ -7,33 +7,17 @@ const authService = require('../services/auth.service');
  */
 exports.register = async (req, res) => {
   try {
-    // Validate input
-    const { username, email, role, password } = req.body;
-    
-    if (!username || !email || !role || !password) {
+    const { username, email, password } = req.body;
+
+    if (!username || !email || !password) {
       return res.status(400).json({
         success: false,
-        error: 'Please provide username, email, role and password'
-      });
-    }
-    
-    //Validate role if provided
-    const allowedRoles = ['admin', 'user'];
-    if (role && !allowedRoles.includes(role)) {
-      return res.status(400).json({
-        success: false,
-        error: 'Invalid role specified'
+        error: 'Missing required fields: username, email, and password'
       });
     }
 
-    // Register user
-    const result = await authService.registerUser({
-      username,
-      email,
-      role: role || 'user',
-      password
-    });
-    
+    const result = await authService.registerUser({ username, email, password });
+
     res.status(201).json({
       success: true,
       data: {
@@ -42,7 +26,7 @@ exports.register = async (req, res) => {
       }
     });
   } catch (err) {
-    console.log('Registration error:', err);
+    console.error('Registration error:', err);
     res.status(400).json({
       success: false,
       error: err.message

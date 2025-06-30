@@ -1,46 +1,71 @@
-const {exec, spawn} = require('child_process');
+const { exec, spawn } = require('child_process');
 const fs = require('fs');
 const path = require('path');
 const Challenge = require('../models/challenge.model');
 const { v4: uuidv4 } = require('uuid');
 const mongoose = require('mongoose');
+const dotenv = require('dotenv').config();
+const validatePort = require('../utils/validatePort');
 
-const TEMP_DIR = path.join('/tmp', 'ctf-deployments');
-if (!fs.existsSync(TEMP_DIR)) {
-  fs.mkdirSync(TEMP_DIR, { recursive: true });
+const CHALLENGES_DIR = path.join(__dirname, '..', 'Challenges');
+if (!fs.existsSync(CHALLENGES_DIR)) {
+  fs.mkdirSync(CHALLENGES_DIR, { recursive: true, mode: 0o755 });
 }
 
+// Helper to create safe directory names
+const slugify = (str) => str.toString()
+  .toLowerCase()
+  .replace(/\s+/g, '-')
+  .replace(/[^\w\-]+/g, '')
+  .replace(/\-\-+/g, '-');
+
 // Helper functions
-async function executeCommand(command, challenge, logPrefix = '') {
+const DEFAULT_EXEC_TIMEOUT = 2 * 60 * 1000; // 2 minutes
+
+async function executeCommand(command, challenge, logPrefix = '', cwd = null, timeout = DEFAULT_EXEC_TIMEOUT) {
   return new Promise((resolve, reject) => {
-    const child = exec(command, (error, stdout, stderr) => {
-      if (error){
-        challenge.logs.push(`[ERROR] ${logPrefix}: ${stderr || error.message}`);
+    const logs = [];
+    console.log(`[EXEC] ${command} ${cwd ? `(cwd: ${cwd})` : ''}`);
+
+    const child = exec(command, { cwd, timeout }, (error, stdout, stderr) => {
+      if (error) {
+        logs.push(`[ERROR] ${logPrefix}: ${stderr || error.message}`);
+        if (challenge && Array.isArray(challenge.logs)) challenge.logs.push(...logs);
         reject(new Error(stderr || error.message));
         return;
       }
-      challenge.logs.push(`[SUCCESS] ${logPrefix}`);
+      logs.push(`[SUCCESS] ${logPrefix}`);
+      if (challenge && Array.isArray(challenge.logs)) challenge.logs.push(...logs);
       resolve(stdout);
     });
 
     child.stdout.on('data', (data) => {
-      challenge.logs.push(data.toString());
+      logs.push(data.toString());
     });
 
     child.stderr.on('data', (data) => {
-      challenge.logs.push(data.toString());
+      logs.push(data.toString());
     });
 
+    // Periodically save logs
     const saveInterval = setInterval(async () => {
-      await challenge.save();
+      if (challenge && Array.isArray(challenge.logs) && logs.length) {
+        challenge.logs.push(...logs.splice(0, logs.length));
+        await challenge.save();
+      }
     }, 2000);
 
     child.on('exit', () => {
       clearInterval(saveInterval);
-      challenge.save();
+      if (challenge && Array.isArray(challenge.logs) && logs.length) {
+        challenge.logs.push(...logs.splice(0, logs.length));
+        challenge.save();
+      }
     });
   });
 }
+
+
 
 async function stopContainer(containerId) {
   return new Promise((resolve, reject) => {
@@ -126,29 +151,34 @@ async function createChallenge(req, res) {
       }
     }
 
-    const challenge = new Challenge({
-      title:req.body.title,
-      description: req.body.description,
-      category: req.body.category,
-      difficulty: req.body.difficulty,
-      points: req.body.points,
-      deployable: req.body.deployable || false
-    });
-
     if (req.body.deployable) {
-      challenge.github_url = req.body.github_url;
-      challenge.port = req.body.port;
-      challenge.internalPort = req.body.internalPort;
+      if (!req.body.github_url || !isValidGitHubUrl(req.body.github_url)) {
+        return res.status(400).json({
+          error: 'Validation failed',
+          details: 'A valid GitHub URL is required for deployable challenges',
+        });
+      }
+
+      // Validate ports
+      try {
+        req.body.port = validatePort(req.body.port || 3000, 'Port');
+        req.body.internalPort = validatePort(req.body.internalPort || 8080, 'Internal Port');
+      } catch (error) {
+        return res.status(400).json({
+          error: 'Invalid port configuration',
+          details: error.message,
+        });
+      }
     }
 
-    console.log('Creating challenge:', challenge);
+    const challenge = new Challenge(req.body);
     await challenge.save();
     res.status(201).json(challenge);
   } catch (error) {
     console.error('Create challenge error:', error);
     res.status(500).json({
       error: 'Error creating challenge',
-      details: error.message
+      details: error.message,
     });
   }
 }
@@ -327,95 +357,179 @@ async function searchChallenges(req, res) {
   }
 }
 
-async function deleteChallenge(req, res) {
-  try {
-    const challenge = await Challenge.findById(req.params.id);
-    if (!challenge) {
-      return res.status(404).json({error: 'Challenge not found'});
-    }
+function runDockerManually(args, challenge, label = '', cwd = null) {
+  return new Promise((resolve, reject) => {
+    challenge.logs.push(`[${new Date().toISOString()}] ${label} (using spawn): docker ${args.join(' ')}`);
 
-    if (challenge.deploymentStatus === 'active' && challenge.containerId) {
-      await stopContainer(challenge.containerId);
-    }
-
-    await challenge.deleteOne({_id: challenge._id});
-    
-    res.json({
-      success: true,
-      message: 'Challenge deleted successfully'
+    const docker = spawn('docker', args, {
+      cwd,
+      stdio: ['ignore', 'pipe', 'pipe'],
     });
-  } catch (error) {
-    handleControllerError(res, error);
-  }
+
+    let stdoutData = '';
+    let stderrData = '';
+
+    docker.stdout.on('data', (data) => {
+      const str = data.toString();
+      stdoutData += str;
+      challenge.logs.push(`[STDOUT] ${str}`)
+    });
+
+    docker.stderr.on('data', (data) => {
+      const str = data.toString();
+      stderrData += str;
+      challenge.logs.push(`[STDERR] ${str}`);
+    });
+
+    docker.on('close', (code) => {
+      if (code === 0) {
+        challenge.logs.push(`[INFO] ${label} completed successfully`);
+        resolve(stdoutData.trim());
+      } else {
+        challenge.logs.push(`[ERROR] ${label} failed with code ${code}`);
+        reject(new Error(`Docker exited with code ${code}: ${stderrData}`));
+      }
+    });
+  });
 }
 
+
 async function deployChallenge(req, res) {
+  let challenge = null;
+  let challengeDir = null;
+
   try {
-    const challenge = await Challenge.findById(req.params.id);
-    if(!challenge) {
-      return res.status(404).json({error: 'Challenge not found' });
+    // 1. Validate input ID
+    if (!req.params.id || !mongoose.Types.ObjectId.isValid(req.params.id)) {
+      return res.status(400).json({ error: 'Invalid challenge ID' });
     }
 
+    // 2. Fetch challenge from DB
+    challenge = await Challenge.findById(req.params.id);
+    if (!challenge) return res.status(404).json({ error: 'Challenge not found' });
     if (!challenge.deployable) {
-      return res.status(400).json({error: 'Challenge is not marked as deployable'});
+      return res.status(400).json({ error: 'Challenge is not marked as deployable' });
     }
 
-    if (!challenge.github_url) {
-      return res.status(400).json({error: 'Github URL is required for deployment'});
+    if (!challenge.github_url || !isValidGitHubUrl(challenge.github_url)) {
+      return res.status(400).json({ 
+        error: 'Valid GitHub URL is required for deployment',
+        details: 'Expected format: https://github.com/owner/repo or git@github.com:owner/repo.git'
+      });
     }
 
+    // 3. Validate ports
+    try {
+      challenge.port = validatePort(challenge.port, 'Port');
+      challenge.internalPort = validatePort(challenge.internalPort, 'Internal Port');
+    } catch (error) {
+      return res.status(400).json({ error: 'Invalid port configuration', details: error.message });
+    }
+
+    // 4. Set deployment status & log
     challenge.deploymentStatus = 'building';
-    challenge.logs = [`[${new Date().toISOString()}] Starting deployment...`];
+    challenge.logs = challenge.logs || [];
+    challenge.logs.push(`[${new Date().toISOString()}] Deployment started...`);
     await challenge.save();
 
-    const deploymentDir = path.join(TEMP_DIR, `challenge-${challenge._id}-${uuidv4()}`);
+    // 5. Setup deployment directory
+    const challengeDirName = `challenge-${challenge._id}-${slugify(challenge.title)}`;
+    challengeDir = path.join(CHALLENGES_DIR, challengeDirName);
+    const force = req.query?.force === 'true' || req.body?.force === true;
+    const isAdmin = req.user?.role === 'admin';
+
+    // 6. Handle existing directory
+    if (fs.existsSync(challengeDir)) {
+      if (isAdmin && force) {
+        challenge.logs.push(`[${new Date().toISOString()}] Admin confirmed force redeploy. Removing existing directory.`);
+        fs.rmSync(challengeDir, { recursive: true, force: true });
+      } else if (isAdmin && !force) {
+        challenge.logs.push(`[${new Date().toISOString()}] Directory exists. Admin confirmation required for redeploy.`);
+        await challenge.save();
+        return res.status(409).json({
+          error: 'Challenge directory already exists.',
+          details: 'Use ?force=true to confirm overwriting the existing repo.'
+        });
+      } else {
+        challenge.logs.push(`[${new Date().toISOString()}] Non-admin attempted redeploy but directory exists.`);
+        await challenge.save();
+        return res.status(409).json({
+          error: 'Challenge directory already exists.',
+          details: 'Only admin can force redeploy using ?force=true.'
+        });
+      }
+    }
+
+    // 7. Clone GitHub repo
+    const authUrl = challenge.github_url.includes('http')
+      ? challenge.github_url.replace('https://', `https://${process.env.GITHUB_USERNAME}:${process.env.GITHUB_TOKEN}@`)
+      : `https://${process.env.GITHUB_USERNAME}:${process.env.GITHUB_TOKEN}@github.com/${challenge.github_url.replace('git@github.com:', '').replace('.git', '')}.git`;
 
     await executeCommand(
-      `git clone ${challenge.github_url} ${deploymentDir}`,
+      `git clone ${authUrl} ${challengeDir} && cd ${challengeDir} && git reset --hard HEAD`,
       challenge,
       'Cloning repository'
     );
+    challenge.logs.push(`[INFO] Cloned repository to ${challengeDir}`);
 
-    const imageName = `ctf-${challenge._id}`;
-    await executeCommand(
-      `docker build -t ${imageName} ${deploymentDir}`,
+    // 8. Build Docker image (Dockerfile only)
+    const imageName = `ctf-${challenge._id}`.toLowerCase();
+    await runDockerManually(
+      ['build', '-t', imageName, '.'],
       challenge,
-      'Building Docker image'
+      'Building Docker image',
+      challengeDir
     );
 
+    // 9. Run Docker container
+    const containerName = `ctf-${challenge._id}`.toLowerCase();
     const portMapping = `${challenge.port}:${challenge.internalPort}`;
-    const containerName = `ctf-container-${challenge._id}`;
-    const containerId = await executeCommand(
-      `docker run -d -p ${portMapping} --name ${containerName} ${imageName}`,
+    const containerId = await runDockerManually(
+      ['run', '-d', '-p', portMapping, '--name', containerName, '--restart', 'unless-stopped', imageName],
       challenge,
-      'Starting container'
+      'Running Docker container',
+      challengeDir
     );
 
-    challenge.deploymentStatus = 'active';
+    // 10. Finalize deployment
     challenge.containerId = containerId.trim();
+    challenge.deploymentStatus = 'active';
     challenge.deployedAt = new Date();
+    challenge.storagePath = challengeDir;
     await challenge.save();
 
-    res.json({
+    return res.json({
       success: true,
+      method: 'dockerfile',
       port: challenge.port,
       containerId: challenge.containerId,
       logs: challenge.logs
     });
 
   } catch (error) {
-    if (req.params.id) {
-      const challenge = await Challenge.findById(req.params.id);
-      if (challenge) {
-        challenge.deploymentStatus = 'failed';
-        challenge.logs.push(`[ERROR] ${error.message}`);
-        await challenge.save();
-      }
+    console.error('Deployment error:', error);
+
+    // Only attempt cleanup if challengeDir is defined
+    if (challengeDir) {
+      const fallbackCleanup = [
+        fs.existsSync(challengeDir) && fs.rmSync(challengeDir, { recursive: true }),
+        challenge && runDockerManually(['rm', '-f', `ctf-${challenge._id}`], challenge, 'Cleanup: remove container'),
+        challenge && runDockerManually(['rmi', `ctf-${challenge._id}`], challenge, 'Cleanup: remove image')
+      ];
+      await Promise.allSettled(fallbackCleanup);
     }
 
-    res.status(500).json({
+    // Only update challenge if defined
+    if (challenge) {
+      challenge.deploymentStatus = 'failed';
+      challenge.logs = challenge.logs || [];
+      challenge.logs.push(`[ERROR] ${error.message}`);
+      await challenge.save();
+    }
+
+    return res.status(500).json({
       error: 'Deployment failed',
-      details: error.message
+      details: process.env.NODE_ENV === 'development' ? error.message : undefined
     });
   }
 }
@@ -441,6 +555,28 @@ async function stopChallenge(req, res) {
     res.json({
       success: true,
       message: 'Challenge stopped successfully'
+    });
+  } catch (error) {
+    handleControllerError(res, error);
+  }
+}
+
+async function deleteChallenge(req, res) {
+  try {
+    const challenge = await Challenge.findById(req.params.id);
+    if (!challenge) {
+      return res.status(404).json({error: 'Challenge not found'});
+    }
+
+    if (challenge.deploymentStatus === 'active' && challenge.containerId) {
+      await stopContainer(challenge.containerId);
+    }
+
+    await challenge.deleteOne({_id: challenge._id});
+    
+    res.json({
+      success: true,
+      message: 'Challenge deleted successfully'
     });
   } catch (error) {
     handleControllerError(res, error);
@@ -479,10 +615,10 @@ module.exports = {
   getChallenges,
   updateChallenge,
   searchChallenges,
-  deleteChallenge,
   deployChallenge,
   stopChallenge,
+  deleteChallenge,
   getChallengeLogs,
   getChallengeById,
-  getContainerStats
+  getContainerStatsController
 };
