@@ -3,6 +3,7 @@ const dotenv = require('dotenv');
 const connectDB = require('./config/db');
 const logger = require('./middleware/logger');
 const cors = require('cors');
+const portRoutes = require('./routes/port.routes');
 
 // Load environment variables
 dotenv.config();
@@ -61,6 +62,7 @@ app.use('/api/ctf-running', require('./routes/ctfRunningChallenge.routes'));
 app.use('/api/solves', require('./routes/solve.routes'));
 app.use('/api/db-admin', require('./routes/dbAdmin.routes'));
 app.use('/api/leaderboard', require('./routes/leaderboard.routes'));
+app.use('/api/ports', portRoutes);
 
 // Root route for API health check
 app.get('/', (req, res) => {

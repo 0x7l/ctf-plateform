@@ -1,20 +1,21 @@
 const Solve = require('../models/solve.model');
+const logger = require('../utils/logger');
 
 // @desc    Get all solves
 // @route   GET /api/solves
 // @access  Private/Admin
 const getSolves = async (req, res) => {
   try {
-    console.log('Fetching all solves');
+    logger.info('Fetching all solves');
     const solves = await Solve.find().populate('challengeId');
-    
+    logger.info(`Found ${solves.length} solves`);
     res.status(200).json({
       success: true,
       count: solves.length,
       data: solves
     });
   } catch (error) {
-    console.log('Error in getSolves:', error);
+    logger.error('Error in getSolves', { error });
     res.status(500).json({
       success: false,
       error: 'Server Error'
@@ -27,31 +28,29 @@ const getSolves = async (req, res) => {
 // @access  Private/Admin
 const getSolveById = async (req, res) => {
   try {
-    console.log(`Fetching solve with id: ${req.params.id}`);
+    logger.info(`Fetching solve with id: ${req.params.id}`);
     const solve = await Solve.findById(req.params.id).populate('challengeId');
-    
     if (!solve) {
+      logger.warn('Solve not found', { id: req.params.id });
       return res.status(404).json({
         success: false,
         error: 'Solve not found'
       });
     }
-    
+    logger.info('Found solve', { id: req.params.id });
     res.status(200).json({
       success: true,
       data: solve
     });
   } catch (error) {
-    console.log('Error in getSolveById:', error);
-    
-    // Check if error is due to invalid ObjectId
+    logger.error('Error in getSolveById', { error, id: req.params.id });
     if (error.kind === 'ObjectId') {
+      logger.warn('Invalid solve ID format', { id: req.params.id });
       return res.status(400).json({
         success: false,
         error: 'Invalid solve ID format'
       });
     }
-    
     res.status(500).json({
       success: false,
       error: 'Server Error'
@@ -64,19 +63,14 @@ const getSolveById = async (req, res) => {
 // @access  Private
 const createSolve = async (req, res) => {
   try {
-    console.log('Create solve request body:', req.body);
-    
+    logger.info('Create solve request body', { body: req.body, userId: req.user._id });
     // Use authenticated user's ID
     const solveData = {
       ...req.body,
       userId: req.user._id
     };
-    
     const solve = await Solve.create(solveData);
-    
-    // Populate the challengeId reference for the response
     await solve.populate('challengeId');
-    
     // Update user's score and solved challenges
     const authService = require('../services/auth.service');
     await authService.updateUserScore(
@@ -84,24 +78,21 @@ const createSolve = async (req, res) => {
       solve.challengeId._id,
       solve.challengeId.points
     );
-    
+    logger.info('Solve created', { id: solve._id, userId: req.user._id });
     res.status(201).json({
       success: true,
       data: solve
     });
   } catch (error) {
-    console.log('Error in createSolve:', error);
-    
-    // Check if error is a validation error
+    logger.error('Error in createSolve', { error, body: req.body, userId: req.user?._id });
     if (error.name === 'ValidationError') {
       const messages = Object.values(error.errors).map(val => val.message);
-      
+      logger.warn('Validation error in createSolve', { messages });
       return res.status(400).json({
         success: false,
         error: messages
       });
     }
-    
     res.status(500).json({
       success: false,
       error: 'Server Error'
@@ -114,7 +105,7 @@ const createSolve = async (req, res) => {
 // @access  Private/Admin
 const updateSolve = async (req, res) => {
   try {
-    console.log(`Updating solve with id: ${req.params.id}`, req.body);
+    logger.info(`Updating solve with id: ${req.params.id}`, { body: req.body });
     const solve = await Solve.findByIdAndUpdate(
       req.params.id,
       req.body,
@@ -123,39 +114,35 @@ const updateSolve = async (req, res) => {
         runValidators: true
       }
     ).populate('challengeId');
-    
     if (!solve) {
+      logger.warn('Solve not found for update', { id: req.params.id });
       return res.status(404).json({
         success: false,
         error: 'Solve not found'
       });
     }
-    
+    logger.info('Solve updated', { id: req.params.id });
     res.status(200).json({
       success: true,
       data: solve
     });
   } catch (error) {
-    console.log('Error in updateSolve:', error);
-    
-    // Check if error is due to invalid ObjectId
+    logger.error('Error in updateSolve', { error, id: req.params.id, body: req.body });
     if (error.kind === 'ObjectId') {
+      logger.warn('Invalid solve ID format', { id: req.params.id });
       return res.status(400).json({
         success: false,
         error: 'Invalid solve ID format'
       });
     }
-    
-    // Check if error is a validation error
     if (error.name === 'ValidationError') {
       const messages = Object.values(error.errors).map(val => val.message);
-      
+      logger.warn('Validation error in updateSolve', { messages });
       return res.status(400).json({
         success: false,
         error: messages
       });
     }
-    
     res.status(500).json({
       success: false,
       error: 'Server Error'
@@ -168,31 +155,29 @@ const updateSolve = async (req, res) => {
 // @access  Private/Admin
 const deleteSolve = async (req, res) => {
   try {
-    console.log(`Deleting solve with id: ${req.params.id}`);
+    logger.info(`Deleting solve with id: ${req.params.id}`);
     const solve = await Solve.findByIdAndDelete(req.params.id);
-    
     if (!solve) {
+      logger.warn('Solve not found for delete', { id: req.params.id });
       return res.status(404).json({
         success: false,
         error: 'Solve not found'
       });
     }
-    
+    logger.info('Solve deleted', { id: req.params.id });
     res.status(200).json({
       success: true,
       data: {}
     });
   } catch (error) {
-    console.log('Error in deleteSolve:', error);
-    
-    // Check if error is due to invalid ObjectId
+    logger.error('Error in deleteSolve', { error, id: req.params.id });
     if (error.kind === 'ObjectId') {
+      logger.warn('Invalid solve ID format', { id: req.params.id });
       return res.status(400).json({
         success: false,
         error: 'Invalid solve ID format'
       });
     }
-    
     res.status(500).json({
       success: false,
       error: 'Server Error'
@@ -205,16 +190,16 @@ const deleteSolve = async (req, res) => {
 // @access  Private
 const getUserSolves = async (req, res) => {
   try {
-    console.log(`Fetching solves for user: ${req.user._id}`);
+    logger.info(`Fetching solves for user: ${req.user._id}`);
     const solves = await Solve.find({ userId: req.user._id }).populate('challengeId');
-    
+    logger.info(`Found ${solves.length} solves for user`, { userId: req.user._id });
     res.status(200).json({
       success: true,
       count: solves.length,
       data: solves
     });
   } catch (error) {
-    console.log('Error in getUserSolves:', error);
+    logger.error('Error in getUserSolves', { error, userId: req.user?._id });
     res.status(500).json({
       success: false,
       error: 'Server Error'

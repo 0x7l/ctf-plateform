@@ -1,4 +1,5 @@
 const User = require('../models/user.model');
+const logger = require('../utils/logger');
 
 /**
  * @desc    Get CTF leaderboard
@@ -11,24 +12,24 @@ exports.getLeaderboard = async (req, res) => {
     const page = parseInt(req.query.page, 10) || 1;
     const limit = parseInt(req.query.limit, 10) || 10;
     const skip = (page - 1) * limit;
-    
-    console.log('Fetching leaderboard');
-    
+
+    logger.info('Fetching leaderboard', { page, limit });
+
     // Find all active users, sort by score (descending)
     const users = await User.find({ active: true })
       .select('username score solvedChallenges')
       .sort({ score: -1 })
       .skip(skip)
       .limit(limit);
-    
+
     // Get total count for pagination
     const total = await User.countDocuments({ active: true });
-    
+
     // Calculate rankings (including ties)
     let currentRank = 0;
     let currentScore = -1;
     let currentCount = 0;
-    
+
     const leaderboard = users.map(user => {
       // Handle ties (same score gets same rank)
       if (user.score !== currentScore) {
@@ -38,7 +39,7 @@ exports.getLeaderboard = async (req, res) => {
       } else {
         currentCount++;
       }
-      
+
       return {
         rank: currentRank,
         username: user.username,
@@ -46,7 +47,9 @@ exports.getLeaderboard = async (req, res) => {
         solvedCount: user.solvedChallenges.length
       };
     });
-    
+
+    logger.info('Leaderboard fetched', { count: users.length });
+
     res.status(200).json({
       success: true,
       count: users.length,
@@ -58,7 +61,7 @@ exports.getLeaderboard = async (req, res) => {
       data: leaderboard
     });
   } catch (error) {
-    console.log('Error in getLeaderboard:', error);
+    logger.error('Error in getLeaderboard', { error });
     res.status(500).json({
       success: false,
       error: 'Server Error'
@@ -74,9 +77,9 @@ exports.getLeaderboard = async (req, res) => {
 exports.getUserStats = async (req, res) => {
   try {
     const { username } = req.params;
-    
-    console.log(`Fetching stats for user: ${username}`);
-    
+
+    logger.info('Fetching stats for user', { username });
+
     // Find user and populate solved challenges
     const user = await User.findOne({ username, active: true })
       .select('username score solvedChallenges')
@@ -87,24 +90,25 @@ exports.getUserStats = async (req, res) => {
           select: 'title category difficulty points'
         }
       });
-    
+
     if (!user) {
+      logger.warn('User not found', { username });
       return res.status(404).json({
         success: false,
         error: 'User not found'
       });
     }
-    
+
     // Get all users and find user's rank
     const allUsers = await User.find({ active: true })
       .select('username score')
       .sort({ score: -1 });
-    
+
     let userRank = 0;
     let currentRank = 0;
     let currentScore = -1;
     let currentCount = 0;
-    
+
     for (const rankedUser of allUsers) {
       if (rankedUser.score !== currentScore) {
         currentRank += currentCount;
@@ -113,13 +117,13 @@ exports.getUserStats = async (req, res) => {
       } else {
         currentCount++;
       }
-      
+
       if (rankedUser.username === username) {
         userRank = currentRank;
         break;
       }
     }
-    
+
     // Create a breakdown of challenges by category
     const categoryBreakdown = {};
     user.solvedChallenges.forEach(solve => {
@@ -129,7 +133,7 @@ exports.getUserStats = async (req, res) => {
       }
       categoryBreakdown[challenge.category] += challenge.points;
     });
-    
+
     // Create a breakdown by difficulty
     const difficultyBreakdown = {};
     user.solvedChallenges.forEach(solve => {
@@ -139,7 +143,9 @@ exports.getUserStats = async (req, res) => {
       }
       difficultyBreakdown[challenge.difficulty]++;
     });
-    
+
+    logger.info('User stats fetched', { username, rank: userRank });
+
     res.status(200).json({
       success: true,
       data: {
@@ -158,7 +164,7 @@ exports.getUserStats = async (req, res) => {
       }
     });
   } catch (error) {
-    console.log('Error in getUserStats:', error);
+    logger.error('Error in getUserStats', { error, username: req.params.username });
     res.status(500).json({
       success: false,
       error: 'Server Error'
