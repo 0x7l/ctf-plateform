@@ -1,4 +1,4 @@
-# CTF Platform API
+#  CTF Platform API
 
 A RESTful API for managing a Capture The Flag (CTF) competition platform.
 
